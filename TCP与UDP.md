@@ -256,3 +256,62 @@ Time wait被设置为2MSL。其中，MSL是Maximum Segment Lifetime，**报文�
 TCP有一个保活机制，即定义一个时间段，在该时间段内，如果没有任何连接相关的活动，则保活机制开始作用。每个一段时间发送一个探测报文，若连续几个报文没被响应，则认为当前TCP连接死亡。
 
 **通过调整内核参数可以设置保活时间，保活的探测次数，保活探测的时间间隔。**
+
+- 对端程序正常工作时：探测报文发送后得到正常响应，然后发送端**重置保活时间。**
+- 对端程序崩溃并重启：对端程序收到探测报文后响应一个RST报文，然后发送端**断开连接。**
+- 对端程序崩溃：发送探测报文后无响应，达到探测保活次数后**断开连接。**
+
+<br>
+
+<br>
+
+## TCP Socket
+
+### 连接流程
+
+- 客户端和服务端初始化socket，得到文件描述符fd；
+- 服务端调用bind绑定端口，并调用listen循环监听端口；
+- 服务端调用accept并阻塞，等待客户端连接；
+- 客户端调用connect，向服务端IP和端口发起连接请求；
+- 服务端accept返回用于通信的socket fd。
+
+服务端调用accept，完成三次握手建立连接后会返回一个已连接的socket文件描述符，后续用来传输数据。
+
+**监听端口的socket和传输数据的socket并不是同一个，前者又叫监听socket，后者叫已完成连接socket。**
+
+<br>
+
+### listen函数
+
+如前所述，Linux内核维护两个队列：
+
+- **未完成连接队列(SYN队列)：**接收到SYN请求，处于SYN_RCVD状态；
+- **已完成连接队列(Accept队列)：**完成TCP三次握手，处于Established状态
+
+当第三次握手的ACK到达后，服务端将相应连接从SYN队列取出，并放入Accept队列。随后服务端应用程序调用accpet函数取出已完成连接的socket。
+
+```c++
+int listen(int socketfd, int backlog);
+```
+
+对于参数backlog，在内核2.2之前，backlog表示SYN队列的大小，现在则表示Accept队列的长度，其上限值是内核参数somaxconn的大小，因此**Accept队列的最大长度 = min(backlog, somaxconn)**。
+
+<br>
+
+**Connect和Accept发生在三次握手的哪一步？**
+
+客户端收到第二次握手返回的SYN + ACK报文后，客户端到服务端的单向连接就已经建立了，客户端进入Established状态，**因此connect在此时返回。**
+
+服务端收到第三次握手发送的ACK报文后进入Established状态，此时服务端到客户端的单向连接完成建立，**因此accept在此时返回。**
+
+<br>
+
+### 断开流程
+
+- 传输数据时，客户端调用write写数据，服务端调用read读数据；
+- 客户端断开连接时调用close，然后发送FIN报文，进入FIN_Wait_1状态；
+- 服务端收到FIN报文，**TCP协议栈自动为FIN包插入一个文件结束符EOF到接收缓冲区**；
+- 服务端通过read感知到FIN包，返回ACK报文，进入Close_Wait状态；客户端则收到ACK进入FIN_Wait_2状态；
+- 服务端继续处理接收缓冲区内的数据，当处理到EOF时，调用close，发送FIN包并进入Last_ACK状态；
+- 客户端收到FIN报文，返回ACK并进入Time_Wait状态；
+- 服务端收到ACK报文，进入Close状态；客户端等待2MSL后进入Close状态。
